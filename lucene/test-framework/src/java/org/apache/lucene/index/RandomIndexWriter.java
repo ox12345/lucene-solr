@@ -80,7 +80,12 @@ public class RandomIndexWriter implements Closeable {
     IndexWriter iw;
     boolean success = false;
     try {
-      iw = new IndexWriter(dir, conf);
+      iw = new IndexWriter(dir, conf) {
+        @Override
+        protected boolean isEnableTestPoints() {
+          return true;
+        }
+      };
       success = true;
     } finally {
       if (reader != null) {
@@ -91,7 +96,6 @@ public class RandomIndexWriter implements Closeable {
         }
       }
     }
-    iw.enableTestPoints = true;
     return iw;
   }
 
@@ -311,12 +315,8 @@ public class RandomIndexWriter implements Closeable {
     return w.commit();
   }
   
-  public int numDocs() {
-    return w.numDocs();
-  }
-
-  public int maxDoc() {
-    return w.maxDoc();
+  public IndexWriter.DocStats getDocStats() {
+    return w.getDocStats();
   }
 
   public long deleteAll() throws IOException {
@@ -365,7 +365,9 @@ public class RandomIndexWriter implements Closeable {
           System.out.println("RIW: doRandomForceMerge(" + limit + ")");
         }
         w.forceMerge(limit);
-        assert !doRandomForceMergeAssert || w.getSegmentCount() <= limit: "limit=" + limit + " actual=" + w.getSegmentCount();
+        if (limit == 1 || (w.getConfig().getMergePolicy() instanceof TieredMergePolicy) == false) {
+          assert !doRandomForceMergeAssert || w.getSegmentCount() <= limit : "limit=" + limit + " actual=" + w.getSegmentCount();
+        }
       } else {
         if (LuceneTestCase.VERBOSE) {
           System.out.println("RIW: do random forceMergeDeletes()");

@@ -32,6 +32,7 @@ import java.util.regex.Pattern;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.BytesRefBuilder;
+import org.apache.solr.common.SolrDocumentBase;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.SolrInputDocument;
@@ -73,7 +74,8 @@ public class AtomicUpdateDocumentMerger {
   public static boolean isAtomicUpdate(final AddUpdateCommand cmd) {
     SolrInputDocument sdoc = cmd.getSolrInputDocument();
     for (SolrInputField sif : sdoc.values()) {
-      if (sif.getValue() instanceof Map) {
+      Object val = sif.getValue();
+      if (val instanceof Map && !(val instanceof SolrDocumentBase)) {
         return true;
       }
     }
@@ -146,7 +148,7 @@ public class AtomicUpdateDocumentMerger {
    * Note: If an update command has updates to only supported fields (and _version_ is also supported),
    * only then is such an update command executed as an in-place update.
    */
-  private static boolean isSupportedFieldForInPlaceUpdate(SchemaField schemaField) {
+  public static boolean isSupportedFieldForInPlaceUpdate(SchemaField schemaField) {
     return !(schemaField.indexed() || schemaField.stored() || !schemaField.hasDocValues() || 
         schemaField.multiValued() || !(schemaField.getType() instanceof NumericValueFieldType));
   }

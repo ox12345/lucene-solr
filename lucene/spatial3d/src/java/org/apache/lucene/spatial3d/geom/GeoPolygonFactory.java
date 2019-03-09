@@ -458,11 +458,16 @@ public class GeoPolygonFactory {
       // Is it inside or outside?
       final Boolean isTestPointInside = isInsidePolygon(testPoint, points);
       if (isTestPointInside != null) {
-        // Legal pole
-        if (isTestPointInside == poleMustBeInside) {
-          return new GeoComplexPolygon(planetModel, pointsList, testPoint, isTestPointInside);
-        } else {
-          return new GeoComplexPolygon(planetModel, pointsList, new GeoPoint(-testPoint.x, -testPoint.y, -testPoint.z), !isTestPointInside);
+        try {
+          // Legal pole
+          if (isTestPointInside == poleMustBeInside) {
+            return new GeoComplexPolygon(planetModel, pointsList, testPoint, isTestPointInside);
+          } else {
+            return new GeoComplexPolygon(planetModel, pointsList, new GeoPoint(-testPoint.x, -testPoint.y, -testPoint.z), !isTestPointInside);
+          }
+        } catch (IllegalArgumentException e) {
+          // Probably bad choice of test point.
+          return null;
         }
       }
       // If pole choice was illegal, try another one
@@ -1237,13 +1242,13 @@ public class GeoPolygonFactory {
         break;
       }
       final Edge newLastEdge = edgeBuffer.getNext(lastEdge);
+      if (Plane.arePointsCoplanar(lastEdge.startPoint, lastEdge.endPoint, newLastEdge.endPoint)) {
+        break;
+      }
       // Planes that are almost identical cannot be properly handled by the standard polygon logic.  Detect this case and, if found,
       // give up on the tiling -- we'll need to create a large poly instead.
       if (lastEdge.plane.isFunctionallyIdentical(newLastEdge.plane)) {
         throw new TileException("Two adjacent edge planes are effectively parallel despite filtering; give up on tiling");
-      }
-      if (Plane.arePointsCoplanar(lastEdge.startPoint, lastEdge.endPoint, newLastEdge.endPoint)) {
-        break;
       }
       if (isWithin(newLastEdge.endPoint, includedEdges)) {
         //System.out.println(" maybe can extend to next edge");
@@ -1307,6 +1312,11 @@ public class GeoPolygonFactory {
       final Edge newFirstEdge = edgeBuffer.getPrevious(firstEdge);
       if (Plane.arePointsCoplanar(newFirstEdge.startPoint, newFirstEdge.endPoint, firstEdge.endPoint)) {
         break;
+      }
+      // Planes that are almost identical cannot be properly handled by the standard polygon logic.  Detect this case and, if found,
+      // give up on the tiling -- we'll need to create a large poly instead.
+      if (firstEdge.plane.isFunctionallyIdentical(newFirstEdge.plane)) {
+        throw new TileException("Two adjacent edge planes are effectively parallel despite filtering; give up on tiling");
       }
       if (isWithin(newFirstEdge.startPoint, includedEdges)) {
         //System.out.println(" maybe can extend to previous edge");
@@ -1387,6 +1397,10 @@ public class GeoPolygonFactory {
         // has no contents, so we generate no polygon.
         return false;
       }
+
+      if (firstEdge.plane.isFunctionallyIdentical(lastEdge.plane)) {
+        throw new TileException("Two adjacent edge planes are effectively parallel despite filtering; give up on tiling");
+      }
       
       // Now look for completely planar points.  This too is a degeneracy condition that we should
       // return "false" for.
@@ -1407,7 +1421,10 @@ public class GeoPolygonFactory {
       // Build the return edge (internal, of course)
       final SidedPlane returnSidedPlane = new SidedPlane(firstEdge.endPoint, false, firstEdge.startPoint, lastEdge.endPoint);
       final Edge returnEdge = new Edge(firstEdge.startPoint, lastEdge.endPoint, returnSidedPlane, true);
-
+      if (returnEdge.plane.isFunctionallyIdentical(lastEdge.plane) ||
+          returnEdge.plane.isFunctionallyIdentical(firstEdge.plane)) {
+        throw new TileException("Two adjacent edge planes are effectively parallel despite filtering; give up on tiling");
+      }
       // Build point list and edge list
       final List<Edge> edges = new ArrayList<Edge>(includedEdges.size());
       returnIsInternal = true;
@@ -1431,23 +1448,30 @@ public class GeoPolygonFactory {
     }
     
     // Now, construct the polygon
-    if (testPoint != null && holes != null && holes.size() > 0) {
-      // No holes, for test
-      final GeoPolygon testPolygon = new GeoConvexPolygon(planetModel, points, null, internalEdges, returnIsInternal);
-      if (testPolygon.isWithin(testPoint)) {
-        return null;
+    // Failures in construction mean we have a polygon that is too large (>180 degrees)
+    try {
+      if (testPoint != null && holes != null && holes.size() > 0) {
+        // No holes, for test
+        final GeoPolygon testPolygon = new GeoConvexPolygon(planetModel, points, null, internalEdges, returnIsInternal);
+        if (testPolygon.isWithin(testPoint)) {
+          return null;
+        }
       }
+      
+      final GeoPolygon realPolygon = new GeoConvexPolygon(planetModel, points, holes, internalEdges, returnIsInternal);
+      if (testPoint != null && (holes == null || holes.size() == 0)) {
+        if (realPolygon.isWithin(testPoint)) {
+          return null;
+        }
+      }
+      
+      rval.addShape(realPolygon);
+      return true;
+
+    } catch (IllegalArgumentException e) {
+      throw new TileException(e.getMessage());
     }
     
-    final GeoPolygon realPolygon = new GeoConvexPolygon(planetModel, points, holes, internalEdges, returnIsInternal);
-    if (testPoint != null && (holes == null || holes.size() == 0)) {
-      if (realPolygon.isWithin(testPoint)) {
-        return null;
-      }
-    }
-    
-    rval.addShape(realPolygon);
-    return true;
   }
   
   /** Check if a point is within a set of edges.

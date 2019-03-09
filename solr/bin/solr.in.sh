@@ -118,22 +118,28 @@
 #SOLR_SSL_ENABLED=true
 # Uncomment to set SSL-related system properties
 # Be sure to update the paths to the correct keystore for your environment
-#SOLR_SSL_KEY_STORE=/home/shalin/work/oss/shalin-lusolr/solr/server/etc/solr-ssl.keystore.jks
+#SOLR_SSL_KEY_STORE=etc/solr-ssl.keystore.jks
 #SOLR_SSL_KEY_STORE_PASSWORD=secret
-#SOLR_SSL_KEY_STORE_TYPE=JKS
-#SOLR_SSL_TRUST_STORE=/home/shalin/work/oss/shalin-lusolr/solr/server/etc/solr-ssl.keystore.jks
+#SOLR_SSL_TRUST_STORE=etc/solr-ssl.keystore.jks
 #SOLR_SSL_TRUST_STORE_PASSWORD=secret
-#SOLR_SSL_TRUST_STORE_TYPE=JKS
+# Require clients to authenticate
 #SOLR_SSL_NEED_CLIENT_AUTH=false
+# Enable clients to authenticate (but not require)
 #SOLR_SSL_WANT_CLIENT_AUTH=false
+# SSL Certificates contain host/ip "peer name" information that is validated by default. Setting
+# this to false can be useful to disable these checks when re-using a certificate on many hosts
+#SOLR_SSL_CHECK_PEER_NAME=true
+# Override Key/Trust Store types if necessary
+#SOLR_SSL_KEY_STORE_TYPE=JKS
+#SOLR_SSL_TRUST_STORE_TYPE=JKS
 
 # Uncomment if you want to override previously defined SSL values for HTTP client
 # otherwise keep them commented and the above values will automatically be set for HTTP clients
 #SOLR_SSL_CLIENT_KEY_STORE=
 #SOLR_SSL_CLIENT_KEY_STORE_PASSWORD=
-#SOLR_SSL_CLIENT_KEY_STORE_TYPE=
 #SOLR_SSL_CLIENT_TRUST_STORE=
 #SOLR_SSL_CLIENT_TRUST_STORE_PASSWORD=
+#SOLR_SSL_CLIENT_KEY_STORE_TYPE=
 #SOLR_SSL_CLIENT_TRUST_STORE_TYPE=
 
 # Sets path of Hadoop credential provider (hadoop.security.credential.provider.path property) and
@@ -146,6 +152,7 @@
 # * javax.net.ssl.trustStorePassword
 # More info: https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/CredentialProviderAPI.html
 #SOLR_HADOOP_CREDENTIAL_PROVIDER_PATH=localjceks://file/home/solr/hadoop-credential-provider.jceks
+#SOLR_OPTS=" -Dsolr.ssl.credential.provider.chain=hadoop"
 
 # Settings for authentication
 # Please configure only one of SOLR_AUTHENTICATION_CLIENT_BUILDER or SOLR_AUTH_TYPE parameters
@@ -171,3 +178,8 @@
 #SOLR_RECOMMENDED_MAX_PROCESSES=
 #SOLR_ULIMIT_CHECKS=
 
+# When running Solr in non-cloud mode and if planning to do distributed search (using the "shards" parameter), the
+# list of hosts needs to be whitelisted or Solr will forbid the request. The whitelist can be configured in solr.xml,
+# or if you are using the OOTB solr.xml, can be specified using the system property "solr.shardsWhitelist". Alternatively
+# host checking can be disabled by using the system property "solr.disable.shardsWhitelist"
+#SOLR_OPTS="$SOLR_OPTS -Dsolr.shardsWhitelist=http://localhost:8983,http://localhost:8984"

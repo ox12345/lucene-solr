@@ -24,6 +24,7 @@ import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.apache.lucene.analysis.standard.StandardTokenizer;
 import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.apache.lucene.analysis.tokenattributes.KeywordAttribute;
 import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
 import org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute;
 import org.apache.lucene.analysis.tokenattributes.PositionLengthAttribute;
@@ -39,7 +40,7 @@ import org.apache.lucene.util.RamUsageEstimator;
  * work correctly when this filter is used in the search-time analyzer.  Unlike
  * the deprecated {@link WordDelimiterFilter}, this token filter produces a
  * correct token graph as output.  However, it cannot consume an input token
- * graph correctly.
+ * graph correctly. Processing is suppressed by {@link KeywordAttribute#isKeyword()}=true.
  *
  * <p>
  * Words are split into subwords with the following rules:
@@ -156,7 +157,12 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
    * "O'Neil's" =&gt; "O", "Neil"
    */
   public static final int STEM_ENGLISH_POSSESSIVE = 256;
-  
+
+  /**
+   * Suppresses processing terms with {@link KeywordAttribute#isKeyword()}=true.
+   */
+  public static final int IGNORE_KEYWORDS = 512;
+
   /**
    * If not null is the set of tokens to protect from being delimited
    *
@@ -174,6 +180,7 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
   private char[][] bufferedTermParts = new char[4][];
   
   private final CharTermAttribute termAttribute = addAttribute(CharTermAttribute.class);
+  private final KeywordAttribute keywordAttribute = addAttribute(KeywordAttribute.class);;
   private final OffsetAttribute offsetAttribute = addAttribute(OffsetAttribute.class);
   private final PositionIncrementAttribute posIncAttribute = addAttribute(PositionIncrementAttribute.class);
   private final PositionLengthAttribute posLenAttribute = addAttribute(PositionLengthAttribute.class);
@@ -183,6 +190,8 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
 
   // used for concatenating runs of similar typed subwords (word,number)
   private final WordDelimiterConcatenation concat = new WordDelimiterConcatenation();
+
+  private final boolean adjustInternalOffsets;
 
   // number of subwords last output by concat.
   private int lastConcatCount;
@@ -199,10 +208,7 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
   private int savedEndOffset;
   private AttributeSource.State savedState;
   private int lastStartOffset;
-  
-  // if length by start + end offsets doesn't match the term text then assume
-  // this is a synonym and don't adjust the offsets.
-  private boolean hasIllegalOffsets;
+  private boolean adjustingOffsets;
 
   private int wordPos;
 
@@ -210,11 +216,12 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
    * Creates a new WordDelimiterGraphFilter
    *
    * @param in TokenStream to be filtered
+   * @param adjustInternalOffsets if the offsets of partial terms should be adjusted
    * @param charTypeTable table containing character types
    * @param configurationFlags Flags configuring the filter
    * @param protWords If not null is the set of tokens to protect from being delimited
    */
-  public WordDelimiterGraphFilter(TokenStream in, byte[] charTypeTable, int configurationFlags, CharArraySet protWords) {
+  public WordDelimiterGraphFilter(TokenStream in, boolean adjustInternalOffsets, byte[] charTypeTable, int configurationFlags, CharArraySet protWords) {
     super(in);
     if ((configurationFlags &
         ~(GENERATE_WORD_PARTS |
@@ -225,13 +232,15 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
           PRESERVE_ORIGINAL |
           SPLIT_ON_CASE_CHANGE |
           SPLIT_ON_NUMERICS |
-          STEM_ENGLISH_POSSESSIVE)) != 0) {
+          STEM_ENGLISH_POSSESSIVE |
+          IGNORE_KEYWORDS)) != 0) {
       throw new IllegalArgumentException("flags contains unrecognized flag: " + configurationFlags);
     }
     this.flags = configurationFlags;
     this.protWords = protWords;
     this.iterator = new WordDelimiterIterator(
         charTypeTable, has(SPLIT_ON_CASE_CHANGE), has(SPLIT_ON_NUMERICS), has(STEM_ENGLISH_POSSESSIVE));
+    this.adjustInternalOffsets = adjustInternalOffsets;
   }
 
   /**
@@ -243,7 +252,7 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
    * @param protWords If not null is the set of tokens to protect from being delimited
    */
   public WordDelimiterGraphFilter(TokenStream in, int configurationFlags, CharArraySet protWords) {
-    this(in, WordDelimiterIterator.DEFAULT_WORD_DELIM_TABLE, configurationFlags, protWords);
+    this(in, false, WordDelimiterIterator.DEFAULT_WORD_DELIM_TABLE, configurationFlags, protWords);
   }
 
   /** Iterates all words parts and concatenations, buffering up the term parts we should return. */
@@ -253,7 +262,7 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
 
     // if length by start + end offsets doesn't match the term's text then set offsets for all our word parts/concats to the incoming
     // offsets.  this can happen if WDGF is applied to an injected synonym, or to a stem'd form, etc:
-    hasIllegalOffsets = (savedEndOffset - savedStartOffset != savedTermLength);
+    adjustingOffsets = adjustInternalOffsets && savedEndOffset - savedStartOffset == savedTermLength;
 
     bufferedLen = 0;
     lastConcatCount = 0;
@@ -335,7 +344,9 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
         if (input.incrementToken() == false) {
           return false;
         }
-
+        if (has(IGNORE_KEYWORDS) && keywordAttribute.isKeyword()) {
+            return true;
+        }
         int termLength = termAttribute.length();
         char[] termBuffer = termAttribute.buffer();
 
@@ -358,6 +369,7 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
           if (has(PRESERVE_ORIGINAL) == false) {
             continue;
           } else {
+            accumPosInc = 0;
             return true;
           }
         }
@@ -380,7 +392,7 @@ public final class WordDelimiterGraphFilter extends TokenFilter {
         int startOffset;
         int endOffset;
 
-        if (hasIllegalOffsets) {
+        if (adjustingOffsets == false) {
           startOffset = savedStartOffset;
           endOffset = savedEndOffset;
         } else {

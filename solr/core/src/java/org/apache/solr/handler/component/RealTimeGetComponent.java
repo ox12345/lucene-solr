@@ -16,10 +16,6 @@
  */
 package org.apache.solr.handler.component;
 
-import static org.apache.solr.common.params.CommonParams.DISTRIB;
-import static org.apache.solr.common.params.CommonParams.ID;
-import static org.apache.solr.common.params.CommonParams.VERSION_FIELD;
-
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.util.ArrayList;
@@ -84,11 +80,17 @@ import org.apache.solr.update.CdcrUpdateLog;
 import org.apache.solr.update.DocumentBuilder;
 import org.apache.solr.update.IndexFingerprint;
 import org.apache.solr.update.PeerSync;
+import org.apache.solr.update.PeerSyncWithLeader;
 import org.apache.solr.update.UpdateLog;
+import org.apache.solr.update.processor.AtomicUpdateDocumentMerger;
 import org.apache.solr.util.RefCounted;
 import org.apache.solr.util.TestInjection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.solr.common.params.CommonParams.DISTRIB;
+import static org.apache.solr.common.params.CommonParams.ID;
+import static org.apache.solr.common.params.CommonParams.VERSION_FIELD;
 
 public class RealTimeGetComponent extends SearchComponent
 {
@@ -160,7 +162,7 @@ public class RealTimeGetComponent extends SearchComponent
             log.debug(req.getCore()
                 .getCoreContainer().getZkController().getNodeName()
                 + " min count to sync to (from most recent searcher view) "
-                + searcher.search(new MatchAllDocsQuery(), 1).totalHits);
+                + searcher.count(new MatchAllDocsQuery()));
           } finally {
             searchHolder.decref();
           }
@@ -425,7 +427,15 @@ public class RealTimeGetComponent extends SearchComponent
     } else { // i.e. lastPrevPointer==0
       assert lastPrevPointer == 0;
       // We have successfully resolved the document based off the tlogs
-      return toSolrDoc(partialDoc, core.getLatestSchema());
+
+      // determine whether we can use the in place document, if the caller specified onlyTheseFields
+      // and those fields are all supported for in-place updates
+      IndexSchema schema = core.getLatestSchema();
+      boolean forInPlaceUpdate = onlyTheseFields != null
+          && onlyTheseFields.stream().map(schema::getField)
+          .allMatch(f -> null!=f && AtomicUpdateDocumentMerger.isSupportedFieldForInPlaceUpdate(f));
+
+      return toSolrDoc(partialDoc, schema, forInPlaceUpdate);
     }
   }
 
@@ -772,8 +782,21 @@ public class RealTimeGetComponent extends SearchComponent
    * @lucene.experimental
    */
   public static SolrDocument toSolrDoc(SolrInputDocument sdoc, IndexSchema schema) {
+    return toSolrDoc(sdoc, schema, false);
+  }
+
+  /**
+   * Converts a SolrInputDocument to SolrDocument, using an IndexSchema instance.
+   *
+   * @param sdoc The input document.
+   * @param schema The index schema.
+   * @param forInPlaceUpdate Whether the document is being used for an in place update,
+   *                         see {@link DocumentBuilder#toDocument(SolrInputDocument, IndexSchema, boolean, boolean)}
+   */
+  public static SolrDocument toSolrDoc(SolrInputDocument sdoc, IndexSchema schema, boolean forInPlaceUpdate) {
+    // TODO what about child / nested docs?
     // TODO: do something more performant than this double conversion
-    Document doc = DocumentBuilder.toDocument(sdoc, schema, false);
+    Document doc = DocumentBuilder.toDocument(sdoc, schema, forInPlaceUpdate, true);
 
     // copy the stored fields only
     Document out = new Document();
@@ -1008,6 +1031,15 @@ public class RealTimeGetComponent extends SearchComponent
 
     UpdateLog ulog = req.getCore().getUpdateHandler().getUpdateLog();
     if (ulog == null) return;
+    String syncWithLeader = params.get("syncWithLeader");
+    if (syncWithLeader != null) {
+      List<Long> versions;
+      try (UpdateLog.RecentUpdates recentUpdates = ulog.getRecentUpdates()) {
+        versions = recentUpdates.getVersions(nVersions);
+      }
+      processSyncWithLeader(rb, nVersions, syncWithLeader, versions);
+      return;
+    }
 
     // get fingerprint first as it will cause a soft commit
     // and would avoid mismatch if documents are being actively index especially during PeerSync
@@ -1020,6 +1052,12 @@ public class RealTimeGetComponent extends SearchComponent
       List<Long> versions = recentUpdates.getVersions(nVersions);
       rb.rsp.add("versions", versions);
     }
+  }
+
+  public void processSyncWithLeader(ResponseBuilder rb, int nVersions, String syncWithLeader, List<Long> versions) {
+    PeerSyncWithLeader peerSync = new PeerSyncWithLeader(rb.req.getCore(), syncWithLeader, nVersions);
+    boolean success = peerSync.sync(versions).isSuccess();
+    rb.rsp.add("syncWithLeader", success);
   }
 
   
@@ -1039,7 +1077,7 @@ public class RealTimeGetComponent extends SearchComponent
     
     boolean cantReachIsSuccess = rb.req.getParams().getBool("cantReachIsSuccess", false);
     
-    PeerSync peerSync = new PeerSync(rb.req.getCore(), replicas, nVersions, cantReachIsSuccess, true);
+    PeerSync peerSync = new PeerSync(rb.req.getCore(), replicas, nVersions, cantReachIsSuccess);
     boolean success = peerSync.sync().isSuccess();
     
     // TODO: more complex response?
@@ -1105,7 +1143,9 @@ public class RealTimeGetComponent extends SearchComponent
 
       // Must return all delete-by-query commands that occur after the first add requested
       // since they may apply.
-      updates.addAll(recentUpdates.getDeleteByQuery(minVersion));
+      if (params.getBool("skipDbq", false)) {
+        updates.addAll(recentUpdates.getDeleteByQuery(minVersion));
+      }
 
       rb.rsp.add("updates", updates);
 
